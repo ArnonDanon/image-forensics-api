@@ -1,0 +1,22 @@
+[project]
+name = "imgforensics"
+version = "0.1.0"
+description = "Deterministic image-forensics measurements for an LLM (or human) deciding whether an image is a real camera photo, AI-generated, or AI-edited."
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "opencv-python-headless>=4.8",
+  "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9"]
+mcp = ["mcp>=2.0"]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
