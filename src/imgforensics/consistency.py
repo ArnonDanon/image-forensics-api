@@ -51,7 +51,7 @@ def _robust_z(values: np.ndarray, lum: np.ndarray, detail: np.ndarray,
         if sel.sum() < 6:
             continue
         med = np.median(v[sel])
-        mad = max(1.4826 * np.median(np.abs(v[sel] - med)), 0.5 * gmad)
+        mad = max(1.4826 * np.median(np.abs(v[sel] - med)), 0.5 * gmad, 0.15)  # log units; guards flat-noise images
         z[sel] = (v[sel] - med) / mad
     return z
 
