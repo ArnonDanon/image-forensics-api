@@ -279,7 +279,7 @@ def vanishing_points(img: np.ndarray, max_vps: int = 3, deg: float = 1.5, iters:
 # --------------------------------------------------------------------------- floor texture
 def floor_test(img: np.ndarray, floor_polygons: list[list[list[float]]],
                horizon_line: list[float] | None = None, exclude_boxes: list[list[int]] | None = None,
-               diff_thresh: float = 20.0) -> Result:
+               diff_thresh: float = 20.0, blur_var: float = 0.3) -> Result:
     """Random texture on a flat floor (terrazzo, gravel, carpet speckle) must be squashed by
     perspective by an exact, predictable amount. From the squash and the horizon we solve for
     the focal length; a real photo gives a focal length a real camera has.
@@ -316,7 +316,9 @@ def floor_test(img: np.ndarray, floor_polygons: list[list[list[float]]],
         if (sub == 0).any():
             continue
         ys, xs = np.nonzero(lbl[y:y + h, x:x + w] == i)
-        C = np.cov(np.vstack([xs, ys]))
+        C = np.cov(np.vstack([xs, ys])) - blur_var * np.eye(2)   # remove pixel/blur rounding
+        if np.linalg.eigvalsh(C)[0] <= 0.05:
+            continue
         blobs.append((cen[i][0], cen[i][1], C / np.trace(C)))
     if len(blobs) < 15:
         return Result("floor_test", False, "none", "neutral", dict(blobs=len(blobs)),
@@ -327,11 +329,15 @@ def floor_test(img: np.ndarray, floor_polygons: list[list[list[float]]],
         return Result("floor_test", False, "none", "neutral", dict(blobs=len(blobs)),
                       "Floor region is not below the horizon - wrong region or wrong horizon.")
     Cs = [p[2] for p in blobs]
+    u = np.array([b, -a])        # along the horizon
+    v = np.array([a, b])         # towards the horizon (perspective squash direction)
+
+    def squash(S):
+        # signed, monotonic measure: spread across vs along the horizon (can exceed 1)
+        return float(np.sqrt((v @ S @ v) / (u @ S @ u)))
 
     def ratio_of(idx):
-        S = sum(Cs[i] for i in idx)
-        ev = np.linalg.eigvalsh(S)
-        return float(np.sqrt(ev[0] / ev[1]))
+        return squash(sum(Cs[i] for i in idx))
 
     rng = np.random.default_rng(0)
     allidx = np.arange(len(blobs))
@@ -339,16 +345,38 @@ def floor_test(img: np.ndarray, floor_polygons: list[list[list[float]]],
     boots = [ratio_of(rng.choice(allidx, len(allidx))) for _ in range(500)]
     lo, hi = np.percentile(boots, [5, 95])
     cx, cy = W / 2, H / 2
-    d0 = a * cx + b * cy + c
 
     def pred(f):
-        rr = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2 + f ** 2)
-        return float(np.mean(D * f / (math.sqrt(f * f + d0 * d0) * rr)))
-    fs = np.arange(100, 6000, 5.0)
+        """Exact prediction: for focal f, the horizon fixes the floor normal n = K^T l.
+        Project an isotropic floor texture through the local Jacobian at every blob position
+        and aggregate exactly like the measurement."""
+        K = np.array([[f, 0, cx], [0, f, cy], [0, 0, 1.0]])
+        n = K.T @ np.array([a, b, c])
+        n /= np.linalg.norm(n)
+        rays = np.linalg.solve(K, np.vstack([X, Y, np.ones_like(X)]))
+        nd = n @ rays
+        if np.median(nd) < 0:
+            n, nd = -n, -nd
+        P = rays / nd                                   # points on plane n.P = 1
+        e1 = np.cross(n, [0.0, 0.0, 1.0])
+        if np.linalg.norm(e1) < 1e-6:
+            e1 = np.cross(n, [0.0, 1.0, 0.0])
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(n, e1)
+        S = np.zeros((2, 2))
+        for Px, Py, Pz in P.T:
+            Jp = (f / Pz) * np.array([[1, 0, -Px / Pz], [0, 1, -Py / Pz]])
+            J = Jp @ np.column_stack([e1, e2])
+            C = J @ J.T
+            S += C / np.trace(C)
+        return squash(S)
+    fs = np.exp(np.linspace(np.log(150), np.log(6000), 300))
     P = np.array([pred(f) for f in fs])
 
     def f_for(r):
-        return float(fs[np.argmin(np.abs(P - r))])
+        # P decreases with f; take the crossing (interpolated)
+        order = np.argsort(P)
+        return float(np.exp(np.interp(r, P[order], np.log(fs)[order])))
     f_est, f_lo, f_hi = f_for(ratio), f_for(hi), f_for(lo)
     f26 = phone_focal_px(W, H, 26)
     eq = lambda f: f / f26 * 26
